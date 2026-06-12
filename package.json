@@ -1,0 +1,121 @@
+{
+  "name": "antigravity-autoretry",
+  "displayName": "Antigravity AutoRetry",
+  "description": "Automatically retries Antigravity IDE agent errors on a configurable interval. Click the status bar to toggle.",
+  "version": "1.0.0",
+  "publisher": "Davissss2",
+  "author": { "name": "Davissss2" },
+  "license": "MIT",
+  "icon": "icon.png",
+  "galleryBanner": { "color": "#0d1117", "theme": "dark" },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "keywords": ["antigravity", "retry", "autoretry", "auto-retry", "agent", "resilience"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Davissss2/Antigravity-AutoRetry.git"
+  },
+  "bugs": { "url": "https://github.com/Davissss2/Antigravity-AutoRetry/issues" },
+  "homepage": "https://github.com/Davissss2/Antigravity-AutoRetry#readme",
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "autoretry.toggle",
+        "title": "AutoRetry: Toggle On/Off",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.enable",
+        "title": "AutoRetry: Enable",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.disable",
+        "title": "AutoRetry: Disable",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.retryNow",
+        "title": "AutoRetry: Retry Now",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.setInterval",
+        "title": "AutoRetry: Set Interval",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.showLog",
+        "title": "AutoRetry: Show Log",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.clearLog",
+        "title": "AutoRetry: Clear Log",
+        "category": "AutoRetry"
+      },
+      {
+        "command": "autoretry.openSettings",
+        "title": "AutoRetry: Open Settings",
+        "category": "AutoRetry"
+      }
+    ],
+    "configuration": {
+      "title": "AutoRetry",
+      "properties": {
+        "autoretry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start AutoRetry automatically when VS Code opens."
+        },
+        "autoretry.intervalSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 3,
+          "maximum": 3600,
+          "description": "Seconds between each automatic retry attempt (default: 5s). Change this in Settings or via 'AutoRetry: Set Interval'."
+        },
+        "autoretry.customCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Custom VS Code command ID to execute on each retry (leave empty to use auto-detection)."
+        },
+        "autoretry.notificationsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show status bar flash on each retry."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "autoretry.toggle",
+        "key": "ctrl+shift+alt+r",
+        "mac": "cmd+shift+alt+r"
+      },
+      {
+        "command": "autoretry.retryNow",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/node": "20.11.0",
+    "@types/vscode": "1.85.0",
+    "@typescript-eslint/eslint-plugin": "6.21.0",
+    "@typescript-eslint/parser": "6.21.0",
+    "eslint": "8.56.0",
+    "typescript": "5.3.3",
+    "@vscode/vsce": "2.22.0"
+  }
+}
