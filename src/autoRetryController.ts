@@ -23,6 +23,7 @@ export class AutoRetryController {
     private _successRetries = 0;
     private _failedRetries  = 0;
     private _lastRetryTime: Date | undefined;
+    private _hasLoggedCommands = false;
 
     constructor(
         private readonly log: Logger,
@@ -101,18 +102,15 @@ export class AutoRetryController {
     }
 
     private async _executeRetry() {
-        this._totalRetries++;
-        this._lastRetryTime = new Date();
-        this.log.log(`🔄 Retry #${this._totalRetries} at ${this._lastRetryTime.toLocaleTimeString()}`);
-
         const ok = await this._triggerRetry();
         if (ok) {
+            this._totalRetries++;
+            this._lastRetryTime = new Date();
             this._successRetries++;
-            this.log.log(`✅ Retry #${this._totalRetries} sent`);
-            vscode.window.setStatusBarMessage(`$(sync~spin) AutoRetry: fired #${this._totalRetries}`, 3000);
-        } else {
-            this._failedRetries++;
-            this.log.log(`⚠ Retry #${this._totalRetries} — no command found (set autoretry.customCommand)`);
+            this.log.log(`✅ [Retry #${this._totalRetries}] Fired retry command successfully at ${this._lastRetryTime.toLocaleTimeString()}`);
+            if (Config.areNotificationsEnabled()) {
+                vscode.window.setStatusBarMessage(`$(sync~spin) AutoRetry: fired #${this._totalRetries}`, 3000);
+            }
         }
     }
 
@@ -120,15 +118,25 @@ export class AutoRetryController {
     private async _triggerRetry(): Promise<boolean> {
         const allCmds = await vscode.commands.getCommands(true);
 
+        // Print all available Antigravity commands once to help debug
+        if (!this._hasLoggedCommands) {
+            this._hasLoggedCommands = true;
+            const antigravityCmds = allCmds.filter(c => 
+                c.toLowerCase().includes('antigravity') && 
+                !c.includes('autoretry')
+            );
+            this.log.log(`🔍 Detected Antigravity commands in IDE: ${JSON.stringify(antigravityCmds)}`);
+        }
+
         // 1. Built-in Antigravity commands
         for (const cmd of RETRY_COMMANDS) {
             if (allCmds.includes(cmd)) {
                 try {
                     await vscode.commands.executeCommand(cmd);
-                    this.log.log(`  → ✓ ${cmd}`);
+                    this.log.log(`  → ✓ Executed command: ${cmd}`);
                     return true;
                 } catch (err) {
-                    this.log.log(`  → ✗ ${cmd}: ${err}`);
+                    this.log.log(`  → ✗ Command ${cmd} failed: ${err}`);
                 }
             }
         }
@@ -138,24 +146,31 @@ export class AutoRetryController {
         if (custom) {
             try {
                 await vscode.commands.executeCommand(custom);
-                this.log.log(`  → ✓ custom: ${custom}`);
+                this.log.log(`  → ✓ Executed custom command: ${custom}`);
                 return true;
             } catch (err) {
-                this.log.log(`  → ✗ custom: ${err}`);
+                this.log.log(`  → ✗ Custom command ${custom} failed: ${err}`);
             }
         }
 
         // 3. Scan all registered commands for "retry"-like names from Antigravity
+        // We exclude:
+        // - 'autoretry' (our own extension)
+        // - 'extension-output' (output pane view commands)
         const retryLike = allCmds.filter((c: string) =>
-            (c.includes('antigravity') || c.includes('antigravity')) &&
+            !c.includes('autoretry') &&
+            !c.includes('extension-output') &&
+            c.toLowerCase().includes('antigravity') &&
             (c.toLowerCase().includes('retry') || c.toLowerCase().includes('rerun'))
         );
         if (retryLike.length > 0) {
             try {
-                this.log.log(`  → Found: ${retryLike[0]}`);
+                this.log.log(`  → Found matching command: ${retryLike[0]}`);
                 await vscode.commands.executeCommand(retryLike[0]);
                 return true;
-            } catch { /* continue */ }
+            } catch (err) {
+                this.log.log(`  → Matching command ${retryLike[0]} failed: ${err}`);
+            }
         }
 
         return false;

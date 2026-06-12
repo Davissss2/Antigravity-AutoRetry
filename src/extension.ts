@@ -53,7 +53,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('autoretry.setInterval', async () => {
             const val = await vscode.window.showInputBox({
                 title: 'AutoRetry – Set Interval',
-                prompt: 'Seconds between automatic retries (min 5)',
+                prompt: 'Seconds between automatic retries (min 3)',
                 value: String(Config.getIntervalSeconds()),
                 validateInput: (v: string) => {
                     const n = parseInt(v, 10);
