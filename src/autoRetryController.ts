@@ -10,13 +10,13 @@ import { Config } from './config';
 const SEND_PROMPT_CMD = 'antigravity.sendPromptToAgentPanel';
 
 /**
- * Patterns that indicate the agent has errored and needs a retry.
- * We watch the Antigravity log files for these strings.
+ * Patterns in the Antigravity IDE log that indicate an agent error.
+ * The Go language server uses E<date> prefix for ERROR level logs.
+ * "run state not found" appears when the agent is terminated due to error.
  */
 const ERROR_PATTERNS = [
-    'terminated due to error',
-    'Agent terminated',
-    'agent terminated',
+    'run state not found',
+    'AcknowledgeCodeActionStep',
 ];
 
 export class AutoRetryController {
@@ -26,18 +26,18 @@ export class AutoRetryController {
     // Log file watching
     private logWatcher: fs.FSWatcher | undefined;
     private watchedLogFile: string | undefined;
-    private logFilePosition = 0;
+    private logFileSize = 0;
 
     // State
-    private _isRunning        = false;
-    private _countdown        = 0;
-    private _totalRetries     = 0;
-    private _successRetries   = 0;
-    private _failedRetries    = 0;
+    private _isRunning         = false;
+    private _countdown         = 0;
+    private _totalRetries      = 0;
+    private _successRetries    = 0;
+    private _failedRetries     = 0;
     private _lastRetryTime: Date | undefined;
     private _hasLoggedCommands = false;
 
-    /** True while we are in an error state (prevents double-firing) */
+    /** Prevents double-firing: true while we are handling an error */
     private _inErrorState = false;
 
     constructor(
@@ -50,10 +50,8 @@ export class AutoRetryController {
     start() {
         if (this._isRunning) { return; }
         this._isRunning = true;
-
         this._startLogWatcher();
         this._startPolling();
-
         this.log.log(`▶ AutoRetry started — watching for agent errors (poll: ${Config.getIntervalSeconds()}s)`);
         this.statusBar.update(true, this._countdown);
     }
@@ -78,11 +76,12 @@ export class AutoRetryController {
             const diags = await vscode.commands.executeCommand('antigravity.getDiagnostics');
             const diagStr = typeof diags === 'string' ? diags : JSON.stringify(diags, null, 2);
             const outPath = path.join(os.homedir(), 'Desktop', 'autoretry', 'diagnostics_test.json');
-            fs.writeFileSync(outPath, diagStr, 'utf8');
+            fs.writeFileSync(outPath, diagStr ?? 'null', 'utf8');
             this.log.log(`📋 Diagnostics saved to diagnostics_test.json`);
         } catch (e) {
             this.log.log(`⚠ Could not fetch diagnostics: ${e}`);
         }
+        this._inErrorState = false; // Allow manual retry always
         await this._doRetry();
     }
 
@@ -102,55 +101,69 @@ export class AutoRetryController {
 
     // ─── Log File Watching ────────────────────────────────────────────────────
 
-    private _findLatestAntigravityLog(): string | undefined {
+    /**
+     * Finds the active Antigravity IDE session log.
+     * The session directory with an actual window1 subdirectory is the real session.
+     * CLI-only sessions (just cli.log) are skipped.
+     */
+    private _findAntigravityLog(): string | undefined {
         try {
             const logsBase = path.join(
                 os.homedir(), 'AppData', 'Roaming', 'Antigravity IDE', 'logs'
             );
-            if (!fs.existsSync(logsBase)) { return undefined; }
+            if (!fs.existsSync(logsBase)) {
+                this.log.log(`⚠ Logs base not found: ${logsBase}`);
+                return undefined;
+            }
 
-            // Find newest session directory
+            // Find all sessions with a window1 directory (real sessions, not CLI installs)
             const sessions = fs.readdirSync(logsBase)
-                .map(name => ({ name, full: path.join(logsBase, name) }))
-                .filter(f => {
-                    try { return fs.statSync(f.full).isDirectory(); } catch { return false; }
+                .filter(name => {
+                    try {
+                        const w1 = path.join(logsBase, name, 'window1');
+                        return fs.existsSync(w1) && fs.statSync(w1).isDirectory();
+                    } catch { return false; }
                 })
-                .sort((a, b) => b.name.localeCompare(a.name));
+                .sort()
+                .reverse(); // Most recent first
 
-            if (!sessions.length) { return undefined; }
+            if (!sessions.length) {
+                this.log.log('⚠ No real Antigravity session found');
+                return undefined;
+            }
 
-            // Primary log: the Antigravity IDE extension log
-            const primary = path.join(
-                sessions[0].full, 'window1', 'exthost',
-                'google.antigravity', 'Antigravity IDE.log'
+            const latestSession = sessions[0];
+            const logPath = path.join(
+                logsBase, latestSession,
+                'window1', 'exthost', 'google.antigravity', 'Antigravity IDE.log'
             );
-            if (fs.existsSync(primary)) { return primary; }
 
-            // Fallback: renderer log
-            const renderer = path.join(sessions[0].full, 'window1', 'renderer.log');
-            if (fs.existsSync(renderer)) { return renderer; }
+            this.log.log(`🔎 Session: ${latestSession}`);
 
-            return undefined;
-        } catch {
+            if (!fs.existsSync(logPath)) {
+                this.log.log(`⚠ Log not found at: ${logPath}`);
+                return undefined;
+            }
+
+            return logPath;
+        } catch (e) {
+            this.log.log(`⚠ Error finding log: ${e}`);
             return undefined;
         }
     }
 
     private _startLogWatcher() {
-        const logFile = this._findLatestAntigravityLog();
+        const logFile = this._findAntigravityLog();
         if (!logFile) {
-            this.log.log('⚠ Antigravity log not found — error detection via polling only');
+            this.log.log('⚠ Could not find Antigravity log — using polling only');
             return;
         }
 
         this.watchedLogFile = logFile;
         try {
             // Start reading from current end of file (ignore old content)
-            const stat = fs.statSync(logFile);
-            this.logFilePosition = stat.size;
-
-            const shortName = logFile.split(path.sep).slice(-3).join('/');
-            this.log.log(`👁 Watching: .../${shortName}`);
+            this.logFileSize = fs.statSync(logFile).size;
+            this.log.log(`👁 Watching: .../${path.basename(logFile)}`);
 
             this.logWatcher = fs.watch(logFile, (eventType) => {
                 if (eventType === 'change') {
@@ -158,7 +171,7 @@ export class AutoRetryController {
                 }
             });
         } catch (e) {
-            this.log.log(`⚠ Could not watch log: ${e}`);
+            this.log.log(`⚠ Could not start log watcher: ${e}`);
         }
     }
 
@@ -166,18 +179,18 @@ export class AutoRetryController {
         if (!this.watchedLogFile) { return; }
         try {
             const stat = fs.statSync(this.watchedLogFile);
-            if (stat.size <= this.logFilePosition) { return; }
+            if (stat.size <= this.logFileSize) { return; }
 
-            // Read only the new bytes
-            const newBytes = stat.size - this.logFilePosition;
-            const buf = Buffer.alloc(newBytes);
+            // Read only new content using a read stream from current position
             const fd = fs.openSync(this.watchedLogFile, 'r');
-            fs.readSync(fd, buf, 0, newBytes, this.logFilePosition);
+            const newSize = stat.size - this.logFileSize;
+            const buf = new Uint8Array(newSize);
+            fs.readSync(fd, buf, 0, newSize, this.logFileSize);
             fs.closeSync(fd);
-            this.logFilePosition = stat.size;
+            this.logFileSize = stat.size;
 
-            const newText = buf.toString('utf8');
-            this._checkForError(newText, 'log file');
+            const newText = Buffer.from(buf).toString('utf8');
+            this._checkForError(newText, 'log');
         } catch { /* ignore transient read errors */ }
     }
 
@@ -187,7 +200,7 @@ export class AutoRetryController {
         this.watchedLogFile = undefined;
     }
 
-    // ─── Polling (backup detection via getDiagnostics) ────────────────────────
+    // ─── Polling (backup detection) ───────────────────────────────────────────
 
     private _startPolling() {
         const sec = Config.getIntervalSeconds();
@@ -213,32 +226,47 @@ export class AutoRetryController {
             const agCmds = allCmds.filter(c =>
                 c.toLowerCase().includes('antigravity') && !c.includes('autoretry')
             );
-            this.log.log(`🔍 Antigravity commands available: ${JSON.stringify(agCmds)}`);
+            this.log.log(`🔍 Antigravity commands: ${JSON.stringify(agCmds)}`);
         }
 
+        // Check diagnostics as backup
         try {
             const diags = await vscode.commands.executeCommand('antigravity.getDiagnostics');
             if (diags !== undefined && diags !== null) {
                 const diagStr = typeof diags === 'string' ? diags : JSON.stringify(diags);
                 this._checkForError(diagStr, 'diagnostics');
             }
-        } catch { /* getDiagnostics unavailable — silent */ }
+        } catch { /* silent */ }
     }
 
     // ─── Error Detection & Retry ──────────────────────────────────────────────
 
     private _checkForError(text: string, source: string) {
-        if (this._inErrorState) { return; } // Already handling
+        if (this._inErrorState) { return; }
 
-        const lower = text.toLowerCase();
-        const matched = ERROR_PATTERNS.find(p => lower.includes(p.toLowerCase()));
-        if (!matched) { return; }
+        // Check for E-level (error) log lines from Go server
+        const lines = text.split('\n');
+        const hasGoError = lines.some(l => {
+            // Go error format: E0612 HH:MM:SS.NNNNNN ...
+            if (/^E\d{4}\s/.test(l.trim())) {
+                return ERROR_PATTERNS.some(p => l.includes(p));
+            }
+            return false;
+        });
+
+        if (!hasGoError) { return; }
+
+        // Find the matching line for logging
+        const matchedLine = lines.find(l =>
+            /^E\d{4}\s/.test(l.trim()) &&
+            ERROR_PATTERNS.some(p => l.includes(p))
+        ) ?? '';
 
         this._inErrorState = true;
-        this.log.log(`🔴 Error detected (${source}): "${matched}" → retrying in 1s...`);
+        this.log.log(`🔴 Agent error detected (${source}): ${matchedLine.trim().substring(0, 120)}`);
+        this.log.log('   → Retrying in 1.5s...');
 
-        // Small delay to let the UI settle before sending
-        setTimeout(() => { this._doRetry(); }, 1000);
+        setTimeout(() => { this._doRetry(); }, 1500);
     }
 
     private async _doRetry() {
@@ -276,12 +304,12 @@ export class AutoRetryController {
             if (Config.areNotificationsEnabled()) {
                 vscode.window.setStatusBarMessage(`$(sync~spin) AutoRetry: fired #${this._totalRetries}`, 3000);
             }
-            // Reset error state after a delay so we can detect future errors
-            setTimeout(() => { this._inErrorState = false; }, 10000);
+            // Reset after 15s so next error can be caught
+            setTimeout(() => { this._inErrorState = false; }, 15000);
         } else {
             this._failedRetries++;
-            this._inErrorState = false; // Reset so we can try again next detection
-            this.log.log(`❌ Retry failed — could not find a working command`);
+            this._inErrorState = false;
+            this.log.log('❌ Retry failed — no working command found');
         }
     }
 
